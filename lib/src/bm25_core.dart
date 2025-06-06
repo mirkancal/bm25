@@ -13,7 +13,7 @@ import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'document.dart';
+import 'bm25_document.dart';
 import 'search_result.dart';
 
 // ─────────────────────────  MODEL TYPES  ─────────────────────────
@@ -35,7 +35,7 @@ class BM25 {
   static const double _b = 0.75;
 
   // ——— Immutable after build
-  final List<Document> _docs; // id → document
+  final List<BM25Document> _docs; // id → document
   final Map<String, _TermInfo> _dict; // term → metadata
   final Uint32List _postings; // [Δdoc, tf, Δdoc, tf, ...]
   final Float64List _norm; // docId → (1‑b)+b*dl/avgDl
@@ -53,11 +53,11 @@ class BM25 {
   /// Runs heavy work in a background isolate, returns ready‑to‑query instance.
   static Future<BM25> build(Iterable<String> rawDocs,
       {Set<String>? stopWords}) async {
-    final docs = <Document>[];
+    final docs = <BM25Document>[];
     var docId = 0;
     for (final text in rawDocs) {
       final terms = _tokenise(text, stopWords);
-      docs.add(Document(id: docId++, text: text, terms: terms));
+      docs.add(BM25Document(id: docId++, text: text, terms: terms));
     }
     if (docs.isEmpty) {
       throw ArgumentError('Corpus must contain at least one document');
@@ -66,7 +66,7 @@ class BM25 {
   }
 
   /// Synchronous build executed in background isolate.
-  static BM25 _buildSync(List<Document> docs) {
+  static BM25 _buildSync(List<BM25Document> docs) {
     // term → [docId, tf, docId, tf ...]
     final postingBuilder = <String, List<int>>{};
     final docLens = Uint32List(docs.length);

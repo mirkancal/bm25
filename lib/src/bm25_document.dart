@@ -1,10 +1,10 @@
 /// A document that can be searched
-class Document {
+class BM25Document {
   final int id;
   final String text;
   final List<String> terms;
 
-  const Document({
+  BM25Document({
     required this.id,
     required this.text,
     required this.terms,

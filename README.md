@@ -222,20 +222,20 @@ Contains the search result with relevance score.
 
 ```dart
 class SearchResult {
-  final Document doc;    // The matched document
-  final double score;    // BM25 relevance score
+  final BM25Document doc;    // The matched document
+  final double score;        // BM25 relevance score
 }
 ```
 
-### Document
+### BM25Document
 
 Represents a searchable document.
 
 ```dart
-class Document {
-  final int id;          // Document index
-  final String text;     // Original text
-  final List<String> terms; // Tokenized terms
+class BM25Document {
+  final int id;              // Document index
+  final String text;         // Original text
+  final List<String> terms;  // Tokenized terms
 }
 ```
 
