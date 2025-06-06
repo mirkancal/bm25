@@ -4,17 +4,20 @@ A pure Dart implementation of the BM25 ranking algorithm for full-text search. P
 
 ## Features
 
+- **Ultra-fast performance** - Optimized implementation with isolate-based parallel processing
+- **Metadata filtering** - Filter search results by arbitrary metadata fields
+- **Partitioned indices** - Create separate indices for different document categories
 - **Pure Dart implementation** - No native dependencies
 - **Async support** - Build indices asynchronously for large document sets
 - **Customizable parameters** - Fine-tune k1 and b parameters
-- **Memory efficient** - Suitable for mobile and web applications
+- **Memory efficient** - Cache-friendly design with typed arrays
 - **Easy integration** - Works great with vector search for hybrid search systems
 
 ## Installation
 
 ```yaml
 dependencies:
-  bm25: ^1.0.0
+  bm25: ^2.5.0
 ```
 
 ## Quick Start
@@ -68,6 +71,86 @@ void main() async {
   print('Top result: ${results.first.doc.text}');
   print('Relevance score: ${results.first.score}');
 }
+```
+
+### Metadata Filtering
+
+Filter search results by metadata fields:
+
+```dart
+// Create documents with metadata
+final docs = [
+  BM25Document(
+    id: 0,
+    text: 'Introduction to machine learning',
+    terms: [], // Will be auto-tokenized
+    meta: {'filePath': 'docs/ml/intro.md', 'category': 'ML'},
+  ),
+  BM25Document(
+    id: 1,
+    text: 'Deep learning fundamentals',
+    terms: [],
+    meta: {'filePath': 'docs/ml/deep.md', 'category': 'ML'},
+  ),
+  BM25Document(
+    id: 2,
+    text: 'Data structures and algorithms',
+    terms: [],
+    meta: {'filePath': 'docs/cs/algo.md', 'category': 'CS'},
+  ),
+];
+
+// Build index with metadata fields
+final bm25 = await BM25.build(docs, indexFields: ['filePath', 'category']);
+
+// Search with single value filter
+final mlResults = await bm25.search('learning', 
+  filter: {'category': 'ML'}
+);
+
+// Search with multiple values filter
+final results = await bm25.search('algorithms', 
+  filter: {'filePath': ['docs/ml/intro.md', 'docs/cs/algo.md']}
+);
+```
+
+### Partitioned Indices
+
+Create separate indices for different document categories:
+
+```dart
+final docs = [
+  BM25Document(
+    id: 0,
+    text: 'Python programming basics',
+    terms: [],
+    meta: {'language': 'python'},
+  ),
+  BM25Document(
+    id: 1,
+    text: 'Advanced Python techniques',
+    terms: [],
+    meta: {'language': 'python'},
+  ),
+  BM25Document(
+    id: 2,
+    text: 'Java programming guide',
+    terms: [],
+    meta: {'language': 'java'},
+  ),
+];
+
+// Create partitioned index
+final partitioned = await PartitionedBM25.build(
+  docs,
+  partitionBy: (doc) => doc.meta['language']!,
+);
+
+// Search in specific partition
+final pythonResults = await partitioned.searchIn('python', 'programming');
+
+// Search across multiple partitions
+final results = await partitioned.searchMany(['python', 'java'], 'advanced');
 ```
 
 ### Custom Parameters
@@ -204,16 +287,52 @@ The main class for performing BM25 searches.
 ```dart
 // Build a BM25 instance from documents
 static Future<BM25> build(
-  Iterable<String> documents, {
-  double k1 = 1.2,
-  double b = 0.75,
+  Iterable<dynamic> documents, {  // Accepts String or BM25Document
+  List<String> indexFields = const ['filePath'],  // Fields to index for filtering
+  Set<String>? stopWords,
 })
 
 // Search documents
 Future<List<SearchResult>> search(
   String query, {
-  int? limit,
+  int limit = 10,
+  Map<String, Object>? filter,  // Filter by metadata fields
+  Set<String>? stopWords,
 })
+
+// Dispose resources
+Future<void> dispose()
+```
+
+### PartitionedBM25
+
+Manages multiple BM25 indices partitioned by a key.
+
+```dart
+// Build partitioned indices
+static Future<PartitionedBM25> build(
+  Iterable<BM25Document> docs, {
+  required String Function(BM25Document) partitionBy,
+  List<String> indexFields = const ['filePath'],
+  Set<String>? stopWords,
+})
+
+// Search in specific partition
+Future<List<SearchResult>> searchIn(
+  String key,
+  String query, {
+  int limit = 10,
+})
+
+// Search across multiple partitions
+Future<List<SearchResult>> searchMany(
+  Iterable<String> keys,
+  String query, {
+  int limit = 10,
+})
+
+// Dispose resources
+Future<void> dispose()
 ```
 
 ### SearchResult
@@ -229,13 +348,14 @@ class SearchResult {
 
 ### BM25Document
 
-Represents a searchable document.
+Represents a searchable document with metadata.
 
 ```dart
 class BM25Document {
-  final int id;              // Document index
-  final String text;         // Original text
-  final List<String> terms;  // Tokenized terms
+  final int id;                        // Document index
+  final String text;                   // Original text
+  final List<String> terms;            // Tokenized terms
+  final Map<String, String> meta;      // Metadata key-value pairs
 }
 ```
 

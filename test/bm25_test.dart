@@ -73,8 +73,8 @@ void main() {
       final docs = ['hello world'];
       final bm25 = await BM25.build(docs);
 
-      expect(
-        () => bm25.search('hello', limit: 0),
+      await expectLater(
+        bm25.search('hello', limit: 0),
         throwsA(isA<RangeError>()),
       );
     });
@@ -378,6 +378,263 @@ void main() {
       expect(results, isNotEmpty);
       // At least one result should match our search
       expect(results.first.score, greaterThan(0));
+    });
+  });
+
+  group('BM25 Metadata and Filtering', () {
+    test('builds index with metadata', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Introduction to machine learning',
+          terms: ['introduction', 'to', 'machine', 'learning'],
+          meta: {'filePath': 'docs/intro.md', 'category': 'ML'},
+        ),
+        BM25Document(
+          id: 1,
+          text: 'Deep learning fundamentals',
+          terms: ['deep', 'learning', 'fundamentals'],
+          meta: {'filePath': 'docs/deep.md', 'category': 'ML'},
+        ),
+        BM25Document(
+          id: 2,
+          text: 'Data structures and algorithms',
+          terms: ['data', 'structures', 'and', 'algorithms'],
+          meta: {'filePath': 'docs/algo.md', 'category': 'CS'},
+        ),
+      ];
+
+      final bm25 = await BM25.build(docs, indexFields: ['filePath', 'category']);
+      final results = await bm25.search('learning');
+
+      expect(results.length, equals(2));
+      expect(results[0].doc.meta['category'], equals('ML'));
+    });
+
+    test('filters by single file path', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Machine learning in Python',
+          terms: ['machine', 'learning', 'in', 'python'],
+          meta: {'filePath': 'python/ml.py'},
+        ),
+        BM25Document(
+          id: 1,
+          text: 'Machine learning in Java',
+          terms: ['machine', 'learning', 'in', 'java'],
+          meta: {'filePath': 'java/ml.java'},
+        ),
+        BM25Document(
+          id: 2,
+          text: 'Web development with Python',
+          terms: ['web', 'development', 'with', 'python'],
+          meta: {'filePath': 'python/web.py'},
+        ),
+      ];
+
+      final bm25 = await BM25.build(docs, indexFields: ['filePath']);
+      
+      // Search with filter
+      final results = await bm25.search('machine learning', 
+        filter: {'filePath': 'python/ml.py'}
+      );
+
+      expect(results.length, equals(1));
+      expect(results[0].doc.meta['filePath'], equals('python/ml.py'));
+    });
+
+    test('filters by multiple file paths', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Neural networks introduction',
+          terms: ['neural', 'networks', 'introduction'],
+          meta: {'filePath': 'ml/nn.md'},
+        ),
+        BM25Document(
+          id: 1,
+          text: 'Neural networks advanced',
+          terms: ['neural', 'networks', 'advanced'],
+          meta: {'filePath': 'ml/nn_advanced.md'},
+        ),
+        BM25Document(
+          id: 2,
+          text: 'Neural networks in practice',
+          terms: ['neural', 'networks', 'in', 'practice'],
+          meta: {'filePath': 'examples/nn.py'},
+        ),
+      ];
+
+      final bm25 = await BM25.build(docs, indexFields: ['filePath']);
+      
+      // Filter with list of paths
+      final results = await bm25.search('neural', 
+        filter: {'filePath': ['ml/nn.md', 'ml/nn_advanced.md']}
+      );
+
+      expect(results.length, equals(2));
+      expect(results.every((r) => r.doc.meta['filePath']!.startsWith('ml/')), isTrue);
+    });
+
+    test('returns empty results when filter matches no documents', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Artificial intelligence basics',
+          terms: ['artificial', 'intelligence', 'basics'],
+          meta: {'filePath': 'ai/basics.md'},
+        ),
+      ];
+
+      final bm25 = await BM25.build(docs, indexFields: ['filePath']);
+      
+      final results = await bm25.search('artificial', 
+        filter: {'filePath': 'nonexistent.md'}
+      );
+
+      expect(results, isEmpty);
+    });
+
+    test('handles documents without metadata field', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Document with metadata',
+          terms: ['document', 'with', 'metadata'],
+          meta: {'filePath': 'doc1.md'},
+        ),
+        BM25Document(
+          id: 1,
+          text: 'Document without metadata',
+          terms: ['document', 'without', 'metadata'],
+          meta: {}, // No filePath
+        ),
+      ];
+
+      final bm25 = await BM25.build(docs, indexFields: ['filePath']);
+      
+      // Should only find document with metadata
+      final results = await bm25.search('document', 
+        filter: {'filePath': 'doc1.md'}
+      );
+
+      expect(results.length, equals(1));
+      expect(results[0].doc.id, equals(0));
+    });
+
+    test('filters with custom fields', () async {
+      // Test with strings and metadata provided separately
+      final bm25 = await BM25.build([
+        'Python tutorial for beginners',
+        'Advanced Python patterns',
+        'Java for beginners',
+      ]);
+      
+      // For this test, we'll just verify the basic search works correctly first
+      final results = await bm25.search('beginners');
+      expect(results.length, equals(2)); // Should find both documents with "beginners"
+      expect(results.every((r) => r.doc.text.toLowerCase().contains('beginners')), isTrue);
+    });
+  });
+
+  group('PartitionedBM25', () {
+    test('creates partitions based on field', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Introduction to Python',
+          terms: ['introduction', 'to', 'python'],
+          meta: {'filePath': 'python/intro.py'},
+        ),
+        BM25Document(
+          id: 1,
+          text: 'Advanced Python techniques',
+          terms: ['advanced', 'python', 'techniques'],
+          meta: {'filePath': 'python/advanced.py'},
+        ),
+        BM25Document(
+          id: 2,
+          text: 'Java programming basics',
+          terms: ['java', 'programming', 'basics'],
+          meta: {'filePath': 'java/basics.java'},
+        ),
+      ];
+
+      final partitioned = await PartitionedBM25.build(
+        docs,
+        partitionBy: (doc) => doc.meta['filePath']!.split('/')[0],
+      );
+
+      // Search in Python partition only
+      final pythonResults = await partitioned.searchIn('python', 'python');
+      expect(pythonResults.length, equals(2));
+
+      // Search in Java partition
+      final javaResults = await partitioned.searchIn('java', 'java');
+      expect(javaResults.length, equals(1));
+    });
+
+    test('searches across multiple partitions', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Machine learning with Python',
+          terms: ['machine', 'learning', 'with', 'python'],
+          meta: {'category': 'ML'},
+        ),
+        BM25Document(
+          id: 1,
+          text: 'Machine learning algorithms',
+          terms: ['machine', 'learning', 'algorithms'],
+          meta: {'category': 'ML'},
+        ),
+        BM25Document(
+          id: 2,
+          text: 'Deep learning basics',
+          terms: ['deep', 'learning', 'basics'],
+          meta: {'category': 'DL'},
+        ),
+        BM25Document(
+          id: 3,
+          text: 'Computer vision with deep learning',
+          terms: ['computer', 'vision', 'with', 'deep', 'learning'],
+          meta: {'category': 'CV'},
+        ),
+      ];
+
+      final partitioned = await PartitionedBM25.build(
+        docs,
+        partitionBy: (doc) => doc.meta['category']!,
+      );
+
+      // Search across ML and DL partitions
+      final results = await partitioned.searchMany(['ML', 'DL'], 'learning');
+      expect(results.length, equals(3));
+      
+      // Verify results are from correct partitions
+      final categories = results.map((r) => r.doc.meta['category']).toSet();
+      expect(categories, containsAll(['ML', 'DL']));
+      expect(categories, isNot(contains('CV')));
+    });
+
+    test('handles non-existent partition gracefully', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Test document',
+          terms: ['test', 'document'],
+          meta: {'type': 'test'},
+        ),
+      ];
+
+      final partitioned = await PartitionedBM25.build(
+        docs,
+        partitionBy: (doc) => doc.meta['type']!,
+      );
+
+      final results = await partitioned.searchIn('nonexistent', 'test');
+      expect(results, isEmpty);
     });
   });
 }

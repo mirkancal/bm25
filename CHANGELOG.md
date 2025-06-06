@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.5.0
+
+### New Features
+- **Ultra-fast BM25 implementation**: Complete rewrite with significant performance improvements
+  - Cache-friendly design with gap-encoded postings in single Uint32List
+  - O(T) build time, O(#postings) query time with tight upper-bound loop
+  - Lock-free top-K selection using fixed-size min-heap
+  - Instance-scoped isolate for concurrent searches
+- **Native metadata filtering**: Filter search results by arbitrary metadata fields
+  - Support for single value and multi-value filters
+  - Efficient field indexing for fast filtering
+  - Example: `search('query', filter: {'filePath': 'docs/intro.md'})`
+- **PartitionedBM25**: New class for managing per-partition indices
+  - Create separate indices based on document attributes
+  - Search within specific partitions or across multiple partitions
+  - Ideal for large corpora with natural divisions (e.g., per-file indices)
+- **Improved document handling**: BM25Document now includes metadata field
+  - Store arbitrary key-value pairs with documents
+  - Use metadata for filtering and partitioning
+
+### Improvements
+- Better memory efficiency with typed arrays
+- Improved tokenization performance
+- Enhanced concurrent search handling
+
+### API Changes
+- `BM25.build()` now accepts `indexFields` parameter for metadata indexing
+- `search()` method now accepts optional `filter` parameter
+- New `PartitionedBM25` class with `searchIn()` and `searchMany()` methods
+
 ## 2.0.0
 
 ### Breaking Changes
