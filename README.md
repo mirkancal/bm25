@@ -17,7 +17,7 @@ A pure Dart implementation of the BM25 ranking algorithm for full-text search. P
 
 ```yaml
 dependencies:
-  bm25: ^2.5.0
+  bm25: ^2.1.0
 ```
 
 ## Quick Start

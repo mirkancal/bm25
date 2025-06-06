@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.5.0
+## 2.1.0
 
 ### New Features
 - **Ultra-fast BM25 implementation**: Complete rewrite with significant performance improvements
