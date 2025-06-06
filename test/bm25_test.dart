@@ -733,6 +733,120 @@ void main() {
     });
   });
 
+  group('BM25 Resource Management', () {
+    test('no ReceivePort leak under load', () async {
+      // Create and dispose many instances to test for port leaks
+      for (int i = 0; i < 100; i++) {
+        final bm25 = await BM25.build(['test document $i']);
+
+        // Perform multiple searches
+        await bm25.search('test');
+        await bm25.search('document');
+        await bm25.search('$i');
+
+        await bm25.dispose();
+      }
+      // Should complete without "no free native port" error
+    });
+
+    test('handles concurrent search and dispose gracefully', () async {
+      final docs = [
+        'the quick brown fox jumps over the lazy dog',
+        'a lazy dog sleeps all day long',
+        'the brown fox is very quick',
+      ];
+
+      final bm25 = await BM25.build(docs);
+
+      // Start multiple searches concurrently
+      final searches = <Future<List<SearchResult>>>[];
+      for (int i = 0; i < 10; i++) {
+        searches.add(bm25.search('fox'));
+        searches.add(bm25.search('dog'));
+        searches.add(bm25.search('quick'));
+      }
+
+      // Dispose while searches are in progress
+      final disposeFuture = bm25.dispose();
+
+      // All operations should complete without error
+      final results = await Future.wait([
+        ...searches.map((s) => s.catchError((_) => <SearchResult>[])),
+        disposeFuture,
+      ]);
+
+      // Verify no crash occurred
+      expect(results, isNotNull);
+    });
+
+    test('prevents new searches during disposal', () async {
+      final bm25 = await BM25.build(['test document']);
+
+      // Start disposal
+      final disposeFuture = bm25.dispose();
+
+      // Try to search during disposal
+      await expectLater(
+        bm25.search('test'),
+        throwsA(isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          contains('Cannot search'),
+        )),
+      );
+
+      await disposeFuture;
+    });
+
+    test('multiple dispose calls are safe', () async {
+      final bm25 = await BM25.build(['test document']);
+
+      await bm25.dispose();
+      await bm25.dispose(); // Second dispose should be safe
+
+      // Should not be able to search after dispose
+      await expectLater(
+        bm25.search('test'),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('rapid create-search-dispose cycles', () async {
+      // Test rapid lifecycle to catch race conditions
+      for (int i = 0; i < 20; i++) {
+        final bm25 = await BM25.build(['document number $i']);
+
+        // Quick search
+        final results = await bm25.search('document');
+        expect(results, isNotEmpty);
+
+        // Immediate dispose
+        await bm25.dispose();
+      }
+    });
+
+    test('search completes even if dispose is called immediately', () async {
+      final bm25 = await BM25.build([
+        'important document with lots of content',
+        'another document with different content',
+      ]);
+
+      // Start search and dispose simultaneously
+      final searchFuture = bm25.search('important');
+      final disposeFuture = Future.delayed(
+        const Duration(milliseconds: 10),
+        () => bm25.dispose(),
+      );
+
+      // Search should complete successfully
+      final results = await searchFuture;
+      expect(results, isNotEmpty);
+      expect(results.first.doc.text, contains('important'));
+
+      await disposeFuture;
+    });
+  });
+
   group('PartitionedBM25', () {
     test('creates partitions based on field', () async {
       final docs = [

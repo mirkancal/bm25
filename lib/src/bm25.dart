@@ -40,6 +40,10 @@ class BM25 {
   SendPort? _worker;
   ReceivePort? _initPort;
   bool _isDisposing = false;
+  bool _isDisposed = false;
+
+  // Track active searches for graceful disposal
+  final List<Future<List<SearchResult>>> _activeSearches = [];
 
   BM25._(
     this._docs,
@@ -95,22 +99,46 @@ class BM25 {
   }) async {
     if (query.trim().isEmpty) return const [];
     if (limit < 1) throw RangeError('limit must be ≥ 1');
-    
-    // Check if being disposed
+
+    // Check if disposed or being disposed
+    if (_isDisposed) {
+      throw StateError('Cannot search: BM25 instance has been disposed');
+    }
     if (_isDisposing) {
       throw StateError('Cannot search: BM25 instance is being disposed');
     }
 
-    // Check if already disposed
+    // Check if isolate was killed
     if (_iso == null && _worker != null) {
       // Isolate was killed, reset worker
       _worker = null;
     }
 
     if (_worker == null) {
+      // Double check we're not disposed while waiting
+      if (_isDisposed) {
+        throw StateError('Cannot search: BM25 instance has been disposed');
+      }
       _worker = await _spawnWorker();
     }
-    
+
+    // Create a future that we can track
+    final searchFuture = _performSearch(query, limit, filter, stopWords);
+    _activeSearches.add(searchFuture);
+
+    try {
+      return await searchFuture;
+    } finally {
+      _activeSearches.remove(searchFuture);
+    }
+  }
+
+  Future<List<SearchResult>> _performSearch(
+    String query,
+    int limit,
+    Map<String, dynamic>? filter,
+    Set<String>? stopWords,
+  ) async {
     final rp = ReceivePort();
     try {
       _worker!.send([rp.sendPort, query, limit, filter, stopWords]);
@@ -128,9 +156,24 @@ class BM25 {
   }
 
   Future<void> dispose() async {
+    // If already disposed, return immediately
+    if (_isDisposed) return;
+
     // Prevent new searches during disposal
     _isDisposing = true;
-    
+
+    // Wait for all active searches to complete
+    if (_activeSearches.isNotEmpty) {
+      try {
+        await Future.wait(_activeSearches).timeout(
+          const Duration(seconds: 5),
+          onTimeout: () => <List<SearchResult>>[],
+        );
+      } catch (_) {
+        // Ignore errors from cancelled searches
+      }
+    }
+
     if (_worker != null && _iso != null) {
       // Send shutdown signal
       _worker!.send(null);
@@ -154,8 +197,9 @@ class BM25 {
       _iso?.kill(); // Use default priority for graceful shutdown
       _iso = null;
     }
-    
+
     _isDisposing = false;
+    _isDisposed = true;
   }
 
   /*──────────────  PRIVATE BUILD  ──────────────*/
@@ -181,7 +225,9 @@ class BM25 {
     // Build postings array
     final terms = pb.keys.toList(growable: false)..sort();
     var needed = 0;
-    for (final t in terms) needed += pb[t]!.length;
+    for (final t in terms) {
+      needed += pb[t]!.length;
+    }
     final post = Uint32List(needed);
 
     final dict = <String, _TermInfo>{};
@@ -219,7 +265,9 @@ class BM25 {
 
     // Field index
     final fieldIx = <String, Map<String, List<int>>>{};
-    for (final f in fields) fieldIx[f] = {};
+    for (final f in fields) {
+      fieldIx[f] = {};
+    }
     for (final d in docs) {
       for (final f in fields) {
         final v = d.meta[f];
@@ -253,7 +301,13 @@ class BM25 {
         BM25._(_docs, _dict, _post, _norm, _fieldIndex, _indexedFields);
     _iso = await Isolate.spawn(_workerMain, [initPort.sendPort, workerData],
         debugName: 'bm25-worker');
-    return await initPort.first as SendPort;
+    final sendPort = await initPort.first as SendPort;
+
+    // Close the init port immediately after use to prevent leak
+    initPort.close();
+    _initPort = null;
+
+    return sendPort;
   }
 
   static void _workerMain(List<Object?> args) async {

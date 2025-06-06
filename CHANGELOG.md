@@ -1,9 +1,21 @@
 # Changelog
 
-## 2.2.0
+## 2.2.1
 
+### Bug Fixes
+- **Critical**: Fixed ReceivePort memory leak that caused "no free native port" errors under heavy load
+  - `_initPort` is now properly closed after worker initialization
+  - Prevents resource exhaustion in long-running applications
+- **Critical**: Fixed race condition between `dispose()` and `search()` operations
+  - Added tracking of active searches to ensure graceful shutdown
+  - `dispose()` now waits for in-flight searches to complete (with 5s timeout)
+  - Prevents "send on closed port" exceptions and hanging futures
+- Added comprehensive test coverage for resource management and concurrent operations
 
-## To be filled
+### Improvements
+- Better lifecycle management with `_isDisposed` flag to prevent operations after disposal
+- Multiple `dispose()` calls are now safe (idempotent)
+- Enhanced error messages for disposal-related state errors
 
 ## 2.1.0
 
