@@ -404,7 +404,8 @@ void main() {
         ),
       ];
 
-      final bm25 = await BM25.build(docs, indexFields: ['filePath', 'category']);
+      final bm25 =
+          await BM25.build(docs, indexFields: ['filePath', 'category']);
       final results = await bm25.search('learning');
 
       expect(results.length, equals(2));
@@ -434,11 +435,10 @@ void main() {
       ];
 
       final bm25 = await BM25.build(docs, indexFields: ['filePath']);
-      
+
       // Search with filter
-      final results = await bm25.search('machine learning', 
-        filter: {'filePath': 'python/ml.py'}
-      );
+      final results = await bm25
+          .search('machine learning', filter: {'filePath': 'python/ml.py'});
 
       expect(results.length, equals(1));
       expect(results[0].doc.meta['filePath'], equals('python/ml.py'));
@@ -467,14 +467,15 @@ void main() {
       ];
 
       final bm25 = await BM25.build(docs, indexFields: ['filePath']);
-      
+
       // Filter with list of paths
-      final results = await bm25.search('neural', 
-        filter: {'filePath': ['ml/nn.md', 'ml/nn_advanced.md']}
-      );
+      final results = await bm25.search('neural', filter: {
+        'filePath': ['ml/nn.md', 'ml/nn_advanced.md']
+      });
 
       expect(results.length, equals(2));
-      expect(results.every((r) => r.doc.meta['filePath']!.startsWith('ml/')), isTrue);
+      expect(results.every((r) => r.doc.meta['filePath']!.startsWith('ml/')),
+          isTrue);
     });
 
     test('returns empty results when filter matches no documents', () async {
@@ -488,10 +489,9 @@ void main() {
       ];
 
       final bm25 = await BM25.build(docs, indexFields: ['filePath']);
-      
-      final results = await bm25.search('artificial', 
-        filter: {'filePath': 'nonexistent.md'}
-      );
+
+      final results = await bm25
+          .search('artificial', filter: {'filePath': 'nonexistent.md'});
 
       expect(results, isEmpty);
     });
@@ -513,11 +513,10 @@ void main() {
       ];
 
       final bm25 = await BM25.build(docs, indexFields: ['filePath']);
-      
+
       // Should only find document with metadata
-      final results = await bm25.search('document', 
-        filter: {'filePath': 'doc1.md'}
-      );
+      final results =
+          await bm25.search('document', filter: {'filePath': 'doc1.md'});
 
       expect(results.length, equals(1));
       expect(results[0].doc.id, equals(0));
@@ -530,11 +529,14 @@ void main() {
         'Advanced Python patterns',
         'Java for beginners',
       ]);
-      
+
       // For this test, we'll just verify the basic search works correctly first
       final results = await bm25.search('beginners');
-      expect(results.length, equals(2)); // Should find both documents with "beginners"
-      expect(results.every((r) => r.doc.text.toLowerCase().contains('beginners')), isTrue);
+      expect(results.length,
+          equals(2)); // Should find both documents with "beginners"
+      expect(
+          results.every((r) => r.doc.text.toLowerCase().contains('beginners')),
+          isTrue);
     });
   });
 
@@ -611,7 +613,7 @@ void main() {
       // Search across ML and DL partitions
       final results = await partitioned.searchMany(['ML', 'DL'], 'learning');
       expect(results.length, equals(3));
-      
+
       // Verify results are from correct partitions
       final categories = results.map((r) => r.doc.meta['category']).toSet();
       expect(categories, containsAll(['ML', 'DL']));

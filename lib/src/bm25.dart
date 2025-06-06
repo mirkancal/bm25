@@ -12,8 +12,8 @@ import 'search_result.dart';
 
 // ──────────────────────────  PRIVATE TYPES  ──────────────────────────
 class _TermInfo {
-  final int off;   // postings start offset
-  final int len;   // postings length (in Uint32s)
+  final int off; // postings start offset
+  final int len; // postings length (in Uint32s)
   final double idf;
   const _TermInfo(this.off, this.len, this.idf);
 }
@@ -139,7 +139,7 @@ class BM25 {
         pairs.add([list[i], list[i + 1]]);
       }
       pairs.sort((a, b) => a[0].compareTo(b[0]));
-      
+
       final start = cur;
       var last = 0;
       for (final pair in pairs) {
@@ -173,8 +173,7 @@ class BM25 {
       }
     }
     final frozen = fieldIx.map((f, m) => MapEntry(
-        f,
-        m.map((v, l) => MapEntry(v, Uint32List.fromList(l)..sort()))));
+        f, m.map((v, l) => MapEntry(v, Uint32List.fromList(l)..sort()))));
 
     return BM25._(docs, dict, post, norm, frozen);
   }

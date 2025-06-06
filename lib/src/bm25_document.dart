@@ -1,7 +1,7 @@
 // Lightweight holder for raw text + arbitrary metadata.
 class BM25Document {
-  final int id;             // stable, 0-based
-  final String text;        // original body (for display/snippets)
+  final int id; // stable, 0-based
+  final String text; // original body (for display/snippets)
   final List<String> terms; // tokenised, lower-cased
   final Map<String, String> meta; // e.g. {'filePath': 'docs/a.pdf'}
 

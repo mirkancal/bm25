@@ -6,7 +6,7 @@ import 'bm25_document.dart';
 import 'search_result.dart';
 
 class PartitionedBM25 {
-  final Map<String, BM25> _part;   // key → sub-index
+  final Map<String, BM25> _part; // key → sub-index
 
   PartitionedBM25._(this._part);
 
@@ -47,7 +47,8 @@ class PartitionedBM25 {
     int limit = 10,
   }) async {
     final futures = [
-      for (final k in keys) if (_part[k] != null) _part[k]!.search(query)
+      for (final k in keys)
+        if (_part[k] != null) _part[k]!.search(query)
     ];
     if (futures.isEmpty) return const [];
     final parts = await Future.wait(futures);

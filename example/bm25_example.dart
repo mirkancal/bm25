@@ -16,14 +16,14 @@ void main() async {
 
   // Search for documents
   final queries = ['quick fox', 'lazy dog', 'jumping'];
-  
+
   for (final query in queries) {
     print('\nSearching for: "$query"');
     final results = await bm25.search(query, limit: 3);
-    
+
     for (final result in results) {
       print('  Score: ${result.score.toStringAsFixed(4)}, '
-            'Doc: "${result.doc.text}"');
+          'Doc: "${result.doc.text}"');
     }
   }
 }
