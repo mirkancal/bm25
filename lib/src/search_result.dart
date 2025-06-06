@@ -2,8 +2,8 @@ import 'document.dart';
 
 /// Search result with document and relevance score
 class SearchResult {
-  final Document document;
+  final Document doc;
   final double score;
-  
-  SearchResult({required this.document, required this.score});
+
+  const SearchResult(this.doc, this.score);
 }
