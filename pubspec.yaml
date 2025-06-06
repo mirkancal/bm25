@@ -1,0 +1,14 @@
+name: bm25
+description: A Dart implementation of the BM25 ranking algorithm for full-text search
+version: 1.0.0
+homepage: https://github.com/mirkancal/bm25-dart
+
+environment:
+  sdk: '>=2.19.0 <4.0.0'
+
+dependencies:
+  meta: ^1.9.0
+
+dev_dependencies:
+  test: ^1.24.0
+  lints: ^2.0.0
