@@ -32,9 +32,14 @@ class BM25 {
   // Field → value → sorted docIds (for filtering)
   final Map<String, Map<String, Uint32List>> _fieldIndex;
 
+  // Indexed fields for validation
+  final Set<String> _indexedFields;
+
   // Worker isolate handle
   Isolate? _iso;
   SendPort? _worker;
+  ReceivePort? _initPort;
+  bool _isDisposing = false;
 
   BM25._(
     this._docs,
@@ -42,6 +47,7 @@ class BM25 {
     this._post,
     this._norm,
     this._fieldIndex,
+    this._indexedFields,
   );
 
   /*──────────────  PUBLIC BUILD  ──────────────*/
@@ -89,18 +95,67 @@ class BM25 {
   }) async {
     if (query.trim().isEmpty) return const [];
     if (limit < 1) throw RangeError('limit must be ≥ 1');
+    
+    // Check if being disposed
+    if (_isDisposing) {
+      throw StateError('Cannot search: BM25 instance is being disposed');
+    }
 
-    _worker ??= await _spawnWorker();
+    // Check if already disposed
+    if (_iso == null && _worker != null) {
+      // Isolate was killed, reset worker
+      _worker = null;
+    }
+
+    if (_worker == null) {
+      _worker = await _spawnWorker();
+    }
+    
     final rp = ReceivePort();
-    _worker!.send([rp.sendPort, query, limit, filter, stopWords]);
-    return await rp.first as List<SearchResult>;
+    try {
+      _worker!.send([rp.sendPort, query, limit, filter, stopWords]);
+      final response = await rp.first as List;
+
+      if (response[0] == 'error') {
+        throw ArgumentError(response[1] as String);
+      }
+
+      return response[1] as List<SearchResult>;
+    } finally {
+      // Always close the ReceivePort to prevent leaks
+      rp.close();
+    }
   }
 
   Future<void> dispose() async {
-    _worker?.send(null);
-    _worker = null;
-    _iso?.kill(priority: Isolate.immediate);
-    _iso = null;
+    // Prevent new searches during disposal
+    _isDisposing = true;
+    
+    if (_worker != null && _iso != null) {
+      // Send shutdown signal
+      _worker!.send(null);
+
+      try {
+        // Wait for acknowledgment with timeout
+        if (_initPort != null) {
+          await _initPort!.skip(1).first.timeout(
+                const Duration(seconds: 5),
+                onTimeout: () => null,
+              );
+        }
+      } catch (_) {
+        // Timeout occurred, proceed with cleanup
+      }
+
+      // Clean up
+      _worker = null;
+      _initPort?.close();
+      _initPort = null;
+      _iso?.kill(); // Use default priority for graceful shutdown
+      _iso = null;
+    }
+    
+    _isDisposing = false;
   }
 
   /*──────────────  PRIVATE BUILD  ──────────────*/
@@ -169,21 +224,36 @@ class BM25 {
       for (final f in fields) {
         final v = d.meta[f];
         if (v == null) continue;
-        fieldIx[f]!.putIfAbsent(v, () => []).add(d.id);
+
+        // Handle lists specially - index each item
+        if (v is List) {
+          for (final item in v) {
+            final key = item.toString();
+            fieldIx[f]!.putIfAbsent(key, () => []).add(d.id);
+          }
+        } else {
+          // Convert single values to string for indexing
+          final key = v.toString();
+          fieldIx[f]!.putIfAbsent(key, () => []).add(d.id);
+        }
       }
     }
     final frozen = fieldIx.map((f, m) => MapEntry(
         f, m.map((v, l) => MapEntry(v, Uint32List.fromList(l)..sort()))));
 
-    return BM25._(docs, dict, post, norm, frozen);
+    return BM25._(docs, dict, post, norm, frozen, fields.toSet());
   }
 
   /*──────────────  WORKER  ──────────────*/
   Future<SendPort> _spawnWorker() async {
-    final ready = ReceivePort();
-    _iso = await Isolate.spawn(_workerMain, [ready.sendPort, this],
+    final initPort = ReceivePort();
+    _initPort = initPort; // Store for disposal
+    // Create a copy without the isolate-related fields
+    final workerData =
+        BM25._(_docs, _dict, _post, _norm, _fieldIndex, _indexedFields);
+    _iso = await Isolate.spawn(_workerMain, [initPort.sendPort, workerData],
         debugName: 'bm25-worker');
-    return await ready.first as SendPort;
+    return await initPort.first as SendPort;
   }
 
   static void _workerMain(List<Object?> args) async {
@@ -193,14 +263,25 @@ class BM25 {
     init.send(rx.sendPort);
 
     await for (final msg in rx) {
-      if (msg == null) break;
+      if (msg == null) {
+        // Shutdown signal received
+        rx.close();
+        init.send(null); // Send acknowledgment
+        break;
+      }
       final list = msg as List;
       final reply = list[0] as SendPort;
       final q = list[1] as String;
       final lim = list[2] as int;
       final filt = list[3] as Map<String, Object>?;
       final stop = list[4] as Set<String>?;
-      reply.send(idx._scoreSync(q, lim, filt, stop));
+
+      try {
+        final results = idx._scoreSync(q, lim, filt, stop);
+        reply.send(['ok', results]);
+      } catch (e) {
+        reply.send(['error', e.toString()]);
+      }
     }
   }
 
@@ -217,17 +298,39 @@ class BM25 {
     // -------- Build allowed set if filter present
     HashSet<int>? allowed;
     if (filter != null && filter.isNotEmpty) {
-      allowed = HashSet<int>();
-      final kv = filter.entries.first;
-      final field = kv.key;
-      final vals = (kv.value is Iterable)
-          ? kv.value as Iterable
-          : [kv.value]; // scalar → single-element list
-      for (final v in vals) {
-        final ids = _fieldIndex[field]?[v.toString()];
-        if (ids != null) allowed.addAll(ids);
+      // Validate filter fields
+      final invalidFields =
+          filter.keys.where((k) => !_indexedFields.contains(k));
+      if (invalidFields.isNotEmpty) {
+        throw ArgumentError(
+            'Filter contains non-indexed fields: ${invalidFields.join(", ")}. '
+            'Available indexed fields: ${_indexedFields.join(", ")}');
       }
-      if (allowed.isEmpty) return const [];
+
+      // Process all filter entries and compute intersection
+      for (final entry in filter.entries) {
+        final field = entry.key;
+        final vals = (entry.value is Iterable)
+            ? entry.value as Iterable
+            : [entry.value]; // scalar → single-element list
+
+        // Collect all document IDs for this field's values
+        final fieldDocs = HashSet<int>();
+        for (final v in vals) {
+          final ids = _fieldIndex[field]?[v.toString()];
+          if (ids != null) fieldDocs.addAll(ids);
+        }
+
+        // Compute intersection with existing allowed set
+        if (allowed == null) {
+          allowed = fieldDocs;
+        } else {
+          allowed = HashSet<int>.from(allowed.intersection(fieldDocs));
+          if (allowed.isEmpty) return const []; // Early exit if no matches
+        }
+      }
+
+      if (allowed?.isEmpty ?? false) return const [];
     }
 
     // -------- Score
@@ -256,7 +359,28 @@ class BM25 {
   }
 
   /*──────────────  HELPERS  ──────────────*/
+  // Unicode-aware word pattern
+  static final _unicodeWordPattern =
+      RegExp(r'\p{L}[\p{L}\p{N}_]*', unicode: true);
+
   static List<String> _tokenise(String text, Set<String>? stop) {
+    // Fast check for pure ASCII
+    bool isPureAscii = true;
+    for (int i = 0; i < text.length; i++) {
+      if (text.codeUnitAt(i) > 127) {
+        isPureAscii = false;
+        break;
+      }
+    }
+
+    if (isPureAscii) {
+      return _tokeniseAscii(text, stop);
+    } else {
+      return _tokeniseUnicode(text, stop);
+    }
+  }
+
+  static List<String> _tokeniseAscii(String text, Set<String>? stop) {
     final out = <String>[];
     final codes = text.codeUnits;
     var start = -1;
@@ -270,15 +394,29 @@ class BM25 {
         if (start == -1) start = i;
       } else if (start != -1) {
         final w = String.fromCharCodes(codes, start, i).toLowerCase();
-        if (stop == null || !stop.contains(w)) out.add(w);
+        if (w.length >= 2 && (stop == null || !stop.contains(w))) out.add(w);
         start = -1;
       }
     }
     if (start != -1) {
       final w = String.fromCharCodes(codes, start).toLowerCase();
-      if (stop == null || !stop.contains(w)) out.add(w);
+      if (w.length >= 2 && (stop == null || !stop.contains(w))) out.add(w);
     }
     return out;
+  }
+
+  static List<String> _tokeniseUnicode(String text, Set<String>? stop) {
+    final tokens = <String>[];
+    final matches = _unicodeWordPattern.allMatches(text.toLowerCase());
+
+    for (final match in matches) {
+      final token = match[0]!;
+      if (token.length >= 2 && (stop == null || !stop.contains(token))) {
+        tokens.add(token);
+      }
+    }
+
+    return tokens;
   }
 
   List<SearchResult> _topK(Float64List s, List<int> docs, int k) {

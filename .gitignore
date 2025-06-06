@@ -4,3 +4,4 @@ pubspec.lock
 build/
 .claude/
 CLAUDE.md
+docs/

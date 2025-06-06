@@ -212,6 +212,43 @@ void main() {
       expect(results.first.doc.id, equals(0));
     });
 
+    test('tokenizes Unicode words correctly', () async {
+      final docs = [
+        'café résumé naïve',
+        'Zürich München Köln',
+        '世界 你好 中文',
+        'καλημέρα κόσμος', // Greek
+        'Здравствуй мир', // Russian
+      ];
+
+      final bm25 = await BM25.build(docs);
+
+      // Test French accented words
+      var results = await bm25.search('café');
+      expect(results, isNotEmpty);
+      expect(results.first.doc.id, equals(0));
+
+      // Test German umlauts
+      results = await bm25.search('Zürich');
+      expect(results, isNotEmpty);
+      expect(results.first.doc.id, equals(1));
+
+      // Test Chinese characters
+      results = await bm25.search('世界');
+      expect(results, isNotEmpty);
+      expect(results.first.doc.id, equals(2));
+
+      // Test Greek
+      results = await bm25.search('καλημέρα');
+      expect(results, isNotEmpty);
+      expect(results.first.doc.id, equals(3));
+
+      // Test Russian
+      results = await bm25.search('Здравствуй');
+      expect(results, isNotEmpty);
+      expect(results.first.doc.id, equals(4));
+    });
+
     test('handles very long documents', () async {
       final longDoc = List.generate(1000, (i) => 'word$i').join(' ');
       final docs = [
@@ -474,7 +511,9 @@ void main() {
       });
 
       expect(results.length, equals(2));
-      expect(results.every((r) => r.doc.meta['filePath']!.startsWith('ml/')),
+      expect(
+          results.every(
+              (r) => (r.doc.meta['filePath'] as String).startsWith('ml/')),
           isTrue);
     });
 
@@ -538,6 +577,160 @@ void main() {
           results.every((r) => r.doc.text.toLowerCase().contains('beginners')),
           isTrue);
     });
+
+    test('filters with multiple fields (intersection)', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Machine learning with Python',
+          terms: ['machine', 'learning', 'with', 'python'],
+          meta: {'category': 'ML', 'language': 'Python'},
+        ),
+        BM25Document(
+          id: 1,
+          text: 'Machine learning with Java',
+          terms: ['machine', 'learning', 'with', 'java'],
+          meta: {'category': 'ML', 'language': 'Java'},
+        ),
+        BM25Document(
+          id: 2,
+          text: 'Data science with Python',
+          terms: ['data', 'science', 'with', 'python'],
+          meta: {'category': 'DS', 'language': 'Python'},
+        ),
+        BM25Document(
+          id: 3,
+          text: 'Web development with Python',
+          terms: ['web', 'development', 'with', 'python'],
+          meta: {'category': 'Web', 'language': 'Python'},
+        ),
+      ];
+
+      final bm25 =
+          await BM25.build(docs, indexFields: ['category', 'language']);
+
+      // Filter by both category and language
+      final results = await bm25
+          .search('learning', filter: {'category': 'ML', 'language': 'Python'});
+
+      expect(results.length, equals(1));
+      expect(results[0].doc.id, equals(0));
+      expect(results[0].doc.meta['category'], equals('ML'));
+      expect(results[0].doc.meta['language'], equals('Python'));
+    });
+
+    test('throws error when filtering on non-indexed field', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Document with metadata',
+          terms: ['document', 'with', 'metadata'],
+          meta: {'filePath': 'doc1.md', 'category': 'test'},
+        ),
+      ];
+
+      // Only index filePath, not category
+      final bm25 = await BM25.build(docs, indexFields: ['filePath']);
+
+      // Should throw when filtering by non-indexed field
+      await expectLater(
+        bm25.search('document', filter: {'category': 'test'}),
+        throwsA(isA<ArgumentError>().having(
+          (e) => e.message,
+          'message',
+          contains('non-indexed fields: category'),
+        )),
+      );
+    });
+
+    test('supports non-string metadata values', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'High priority task',
+          terms: ['high', 'priority', 'task'],
+          meta: {
+            'category': 'task',
+            'priority': 1,
+            'tags': ['urgent', 'important']
+          },
+        ),
+        BM25Document(
+          id: 1,
+          text: 'Medium priority task',
+          terms: ['medium', 'priority', 'task'],
+          meta: {
+            'category': 'task',
+            'priority': 2,
+            'tags': ['normal']
+          },
+        ),
+        BM25Document(
+          id: 2,
+          text: 'Low priority task',
+          terms: ['low', 'priority', 'task'],
+          meta: {
+            'category': 'task',
+            'priority': 3,
+            'tags': ['optional']
+          },
+        ),
+      ];
+
+      final bm25 =
+          await BM25.build(docs, indexFields: ['category', 'priority', 'tags']);
+
+      // Filter by numeric priority
+      var results = await bm25.search('task', filter: {'priority': 1});
+      expect(results.length, equals(1));
+      expect(results[0].doc.meta['priority'], equals(1));
+
+      // Filter by list values
+      results = await bm25.search('task', filter: {'tags': 'urgent'});
+      expect(results.length, equals(1));
+      expect(results[0].doc.id, equals(0));
+    });
+
+    test('filters with multiple values per field (union)', () async {
+      final docs = [
+        BM25Document(
+          id: 0,
+          text: 'Introduction to algorithms',
+          terms: ['introduction', 'to', 'algorithms'],
+          meta: {'topic': 'algorithms', 'level': 'beginner'},
+        ),
+        BM25Document(
+          id: 1,
+          text: 'Advanced algorithms',
+          terms: ['advanced', 'algorithms'],
+          meta: {'topic': 'algorithms', 'level': 'advanced'},
+        ),
+        BM25Document(
+          id: 2,
+          text: 'Data structures basics',
+          terms: ['data', 'structures', 'basics'],
+          meta: {'topic': 'data-structures', 'level': 'beginner'},
+        ),
+        BM25Document(
+          id: 3,
+          text: 'Advanced data structures',
+          terms: ['advanced', 'data', 'structures'],
+          meta: {'topic': 'data-structures', 'level': 'advanced'},
+        ),
+      ];
+
+      final bm25 = await BM25.build(docs, indexFields: ['topic', 'level']);
+
+      // Filter by multiple topics and specific level
+      final results = await bm25.search('advanced', filter: {
+        'topic': ['algorithms', 'data-structures'],
+        'level': 'advanced'
+      });
+
+      expect(results.length, equals(2));
+      expect(results.every((r) => r.doc.meta['level'] == 'advanced'), isTrue);
+      expect({results[0].doc.id, results[1].doc.id}, equals({1, 3}));
+    });
   });
 
   group('PartitionedBM25', () {
@@ -565,7 +758,7 @@ void main() {
 
       final partitioned = await PartitionedBM25.build(
         docs,
-        partitionBy: (doc) => doc.meta['filePath']!.split('/')[0],
+        partitionBy: (doc) => (doc.meta['filePath'] as String).split('/')[0],
       );
 
       // Search in Python partition only
@@ -607,7 +800,7 @@ void main() {
 
       final partitioned = await PartitionedBM25.build(
         docs,
-        partitionBy: (doc) => doc.meta['category']!,
+        partitionBy: (doc) => doc.meta['category'] as String,
       );
 
       // Search across ML and DL partitions
@@ -632,7 +825,7 @@ void main() {
 
       final partitioned = await PartitionedBM25.build(
         docs,
-        partitionBy: (doc) => doc.meta['type']!,
+        partitionBy: (doc) => doc.meta['type'] as String,
       );
 
       final results = await partitioned.searchIn('nonexistent', 'test');
