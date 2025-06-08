@@ -137,6 +137,7 @@ class BM25 {
     if (_iso == null && _worker != null) {
       // Isolate was killed, reset worker
       _worker = null;
+      _spawnOp = null; // Allow a fresh spawn
     }
 
     if (_worker == null) {
@@ -154,6 +155,8 @@ class BM25 {
           cancelToken.then(
               (_) => throw StateError('Search cancelled: BM25 is disposing')),
         ]);
+        // Free the resolved operation after concurrent awaiters have read it
+        scheduleMicrotask(() => _spawnOp = null);
       } catch (e) {
         // If we're disposing, convert any spawn error to a clear message
         if (_isDisposing) {
@@ -162,9 +165,6 @@ class BM25 {
         // Clear the operation on error so next search can retry
         _spawnOp = null;
         rethrow;
-      } finally {
-        // Always reset so next search can retry if needed
-        _spawnOp = null;
       }
     }
 
