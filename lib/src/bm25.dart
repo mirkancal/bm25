@@ -6,6 +6,7 @@ import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:collection';
+import 'package:async/async.dart';
 
 import 'bm25_document.dart';
 import 'search_result.dart';
@@ -38,7 +39,7 @@ class BM25 {
   // Worker isolate handle
   Isolate? _iso;
   SendPort? _worker;
-  ReceivePort? _initPort;
+  CancelableOperation<SendPort>? _spawnOp; // Cancellable spawn operation
   bool _isDisposing = false;
   bool _isDisposed = false;
 
@@ -91,10 +92,16 @@ class BM25 {
   }
 
   /*──────────────  SEARCH  ──────────────*/
+  /// Searches the corpus for documents matching the query.
+  /// 
+  /// [filter] - Optional metadata filters. Keys must be indexed fields.
+  /// Values must be primitives (String, num, bool) or List of primitives.
+  /// Custom objects are not supported due to isolate message passing constraints.
+  /// Example: {'filePath': 'doc.pdf', 'tags': ['important', 'review']}
   Future<List<SearchResult>> search(
     String query, {
     int limit = 10,
-    Map<String, Object>? filter, // {'filePath': 'a.pdf'} or list
+    Map<String, Object>? filter,
     Set<String>? stopWords,
   }) async {
     if (query.trim().isEmpty) return const [];
@@ -119,7 +126,21 @@ class BM25 {
       if (_isDisposed) {
         throw StateError('Cannot search: BM25 instance has been disposed');
       }
-      _worker = await _spawnWorker();
+      
+      // Prevent double-spawn race with cancellable operation
+      _spawnOp ??= CancelableOperation<SendPort>.fromFuture(
+        _spawnWorker(),
+      );
+      try {
+        _worker = await _spawnOp!.value;
+      } catch (e) {
+        if (e is! StateError || !e.message.contains('canceled')) {
+          // Only rethrow if not a cancellation
+          rethrow;
+        }
+      } finally {
+        _spawnOp = null; // Always reset
+      }
     }
 
     // Create a future that we can track
@@ -162,6 +183,10 @@ class BM25 {
     // Prevent new searches during disposal
     _isDisposing = true;
 
+    // Cancel any in-progress spawn immediately
+    await _spawnOp?.cancel();
+    _spawnOp = null;
+
     // Wait for all active searches to complete
     if (_activeSearches.isNotEmpty) {
       try {
@@ -175,26 +200,29 @@ class BM25 {
     }
 
     if (_worker != null && _iso != null) {
-      // Send shutdown signal
-      _worker!.send(null);
-
+      // Create a new port specifically for shutdown acknowledgment
+      final shutdownPort = ReceivePort();
+      // Send shutdown signal with acknowledgment port
+      _worker!.send([null, shutdownPort.sendPort]);
+      
       try {
         // Wait for acknowledgment with timeout
-        if (_initPort != null) {
-          await _initPort!.skip(1).first.timeout(
-                const Duration(seconds: 5),
-                onTimeout: () => null,
-              );
-        }
+        await shutdownPort.first.timeout(
+          const Duration(seconds: 5),
+          onTimeout: () => null,
+        );
       } catch (_) {
-        // Timeout occurred, proceed with cleanup
+        // Timeout occurred or error, proceed with cleanup
+      } finally {
+        // Always clean up
+        shutdownPort.close();
       }
 
       // Clean up
       _worker = null;
-      _initPort?.close();
-      _initPort = null;
-      _iso?.kill(); // Use default priority for graceful shutdown
+      _spawnOp = null;
+      // Use graceful shutdown priority
+      _iso?.kill(priority: Isolate.beforeNextEvent);
       _iso = null;
     }
 
@@ -295,19 +323,48 @@ class BM25 {
   /*──────────────  WORKER  ──────────────*/
   Future<SendPort> _spawnWorker() async {
     final initPort = ReceivePort();
-    _initPort = initPort; // Store for disposal
-    // Create a copy without the isolate-related fields
-    final workerData =
-        BM25._(_docs, _dict, _post, _norm, _fieldIndex, _indexedFields);
-    _iso = await Isolate.spawn(_workerMain, [initPort.sendPort, workerData],
-        debugName: 'bm25-worker');
-    final sendPort = await initPort.first as SendPort;
+    
+    try {
+      // Create a copy without the isolate-related fields
+      final workerData =
+          BM25._(_docs, _dict, _post, _norm, _fieldIndex, _indexedFields);
+      
+      // Spawn with hard timeout
+      _iso = await Isolate.spawn(
+        _workerMain,
+        [initPort.sendPort, workerData],
+        debugName: 'bm25-worker',
+      ).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw TimeoutException('Worker spawn timeout'),
+      );
+      
+      // Check if we're being disposed
+      if (_isDisposing) {
+        _iso?.kill();
+        _iso = null;
+        initPort.close();
+        throw StateError('BM25 instance is being disposed');
+      }
+      
+      // Handshake with hard timeout
+      final sendPort = await initPort.first.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => throw TimeoutException('Worker init timeout'),
+      ) as SendPort;
 
-    // Close the init port immediately after use to prevent leak
-    initPort.close();
-    _initPort = null;
-
-    return sendPort;
+      // Close the port now that we have the SendPort
+      // We don't need it anymore since we use a separate port for shutdown
+      initPort.close();
+      
+      return sendPort;
+    } catch (e) {
+      // Clean up on error
+      initPort.close();
+      _iso?.kill();
+      _iso = null;
+      rethrow;
+    }
   }
 
   static void _workerMain(List<Object?> args) async {
@@ -318,12 +375,22 @@ class BM25 {
 
     await for (final msg in rx) {
       if (msg == null) {
-        // Shutdown signal received
+        // Shutdown signal received (old protocol, for compatibility)
         rx.close();
-        init.send(null); // Send acknowledgment
         break;
       }
+      
       final list = msg as List;
+      
+      // Check if this is a shutdown request with acknowledgment port
+      if (list[0] == null && list.length > 1) {
+        // New shutdown protocol with acknowledgment
+        final ackPort = list[1] as SendPort;
+        rx.close();
+        ackPort.send(null); // Send acknowledgment
+        break;
+      }
+      
       final reply = list[0] as SendPort;
       final q = list[1] as String;
       final lim = list[2] as int;

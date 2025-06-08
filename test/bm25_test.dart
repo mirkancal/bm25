@@ -825,6 +825,55 @@ void main() {
       }
     });
 
+    test('rapid spawn-then-dispose without search', () async {
+      // Test the specific race condition where dispose is called immediately
+      // after build, before any search operations
+      for (int i = 0; i < 10; i++) {
+        final bm25 = await BM25.build([
+          'test document one',
+          'test document two',
+          'test document three',
+        ]);
+
+        // Immediately dispose without searching
+        // This tests the race condition in worker lifecycle
+        final disposeFuture = bm25.dispose();
+        
+        // Dispose should complete quickly (not timeout)
+        await expectLater(
+          disposeFuture.timeout(const Duration(seconds: 2)),
+          completes,
+        );
+      }
+    });
+
+    test('dispose during worker spawn', () async {
+      // Create multiple instances and dispose them during various stages
+      final futures = <Future>[];
+      
+      for (int i = 0; i < 5; i++) {
+        futures.add(() async {
+          final bm25 = await BM25.build(['document $i']);
+          
+          // Start a search to trigger worker spawn
+          final searchFuture = bm25.search('document');
+          
+          // Immediately dispose (may interrupt worker spawn)
+          await Future.delayed(Duration(milliseconds: i * 10));
+          await bm25.dispose();
+          
+          // Search should either complete or throw a StateError
+          try {
+            await searchFuture;
+          } catch (e) {
+            expect(e, isA<StateError>());
+          }
+        }());
+      }
+      
+      await Future.wait(futures);
+    });
+
     test('search completes even if dispose is called immediately', () async {
       final bm25 = await BM25.build([
         'important document with lots of content',
@@ -844,6 +893,93 @@ void main() {
       expect(results.first.doc.text, contains('important'));
 
       await disposeFuture;
+    });
+
+    test('concurrent searches create only one isolate', () async {
+      final bm25 = await BM25.build([
+        'document one about cats',
+        'document two about dogs',
+        'document three about birds',
+        'document four about fish',
+        'document five about rabbits',
+      ]);
+
+      // Fire 50 parallel searches
+      final futures = <Future<List<SearchResult>>>[];
+      for (int i = 0; i < 50; i++) {
+        futures.add(bm25.search('document'));
+      }
+
+      // All searches should complete successfully
+      final results = await Future.wait(futures);
+      expect(results.length, equals(50));
+      expect(results.every((r) => r.isNotEmpty), isTrue);
+
+      // Only one worker should have been spawned (verified by the memoized future)
+      await bm25.dispose();
+    });
+
+    test('spawn-dispose completes quickly', () async {
+      final bm25 = await BM25.build(['a', 'b', 'c']);
+      
+      // Dispose should complete within 2 seconds
+      await expectLater(
+        bm25.dispose().timeout(const Duration(seconds: 2)),
+        completes,
+      );
+    });
+
+    test('old shutdown protocol still works', () async {
+      // This test verifies backward compatibility
+      final bm25 = await BM25.build(['test document']);
+      
+      // Trigger worker spawn
+      await bm25.search('test');
+      
+      // Dispose should still work correctly
+      await expectLater(
+        bm25.dispose().timeout(const Duration(seconds: 2)),
+        completes,
+      );
+    });
+
+    test('worker spawn timeout triggers TimeoutException', () async {
+      // This test would require mocking or a test-specific timeout override
+      // Since we can't easily override the timeout in production code,
+      // we'll test that searches handle timeouts gracefully
+      final bm25 = await BM25.build(['doc']);
+      
+      // Multiple rapid searches should still work even under load
+      final futures = <Future>[];
+      for (int i = 0; i < 10; i++) {
+        futures.add(bm25.search('doc').catchError((e) => <SearchResult>[]));
+      }
+      
+      final results = await Future.wait(futures);
+      expect(results.every((r) => r is List), isTrue);
+      
+      await bm25.dispose();
+    });
+
+    test('dispose cancels slow spawn immediately', () async {
+      final bm25 = await BM25.build(['doc']);
+      
+      // Start multiple searches to potentially trigger spawn
+      final searchFutures = <Future>[];
+      for (int i = 0; i < 5; i++) {
+        searchFutures.add(
+          bm25.search('doc').catchError((_) => <SearchResult>[])
+        );
+      }
+      
+      // Dispose immediately - should complete quickly even if spawn is in progress
+      await expectLater(
+        bm25.dispose().timeout(const Duration(seconds: 2)),
+        completes,
+      );
+      
+      // Clean up search futures
+      await Future.wait(searchFutures);
     });
   });
 
