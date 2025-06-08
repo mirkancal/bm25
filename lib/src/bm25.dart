@@ -20,6 +20,37 @@ class _TermInfo {
 }
 
 // ────────────────────────────  BM25 CORE  ────────────────────────────
+/// The main BM25 search engine class.
+///
+/// This class implements the Okapi BM25 ranking algorithm for full-text search.
+/// It supports:
+/// - Unicode-aware tokenization for international text
+/// - Stop word filtering to improve search relevance
+/// - Metadata filtering on indexed fields
+/// - Concurrent search operations via isolates for better performance
+///
+/// The BM25 algorithm ranks documents based on query term frequency and inverse
+/// document frequency, providing more relevant results than simple keyword matching.
+///
+/// Usage:
+/// ```dart
+/// // Build from a list of documents
+/// final bm25 = await BM25.build(
+///   documents,
+///   indexFields: ['category', 'author'],
+///   stopWords: {'the', 'is', 'at', 'which', 'on'}
+/// );
+///
+/// // Search with optional filters
+/// final results = await bm25.search(
+///   'search query',
+///   limit: 10,
+///   filter: {'category': 'tech'}
+/// );
+///
+/// // Clean up resources when done
+/// await bm25.dispose();
+/// ```
 class BM25 {
   // Tunables
   static const double _k1 = 1.2, _b = 0.75;
@@ -60,6 +91,50 @@ class BM25 {
   );
 
   /*──────────────  PUBLIC BUILD  ──────────────*/
+  /// Creates a new BM25 search index from a collection of documents.
+  ///
+  /// This method builds the inverted index and prepares all data structures
+  /// needed for efficient searching. The build process runs in an isolate
+  /// to avoid blocking the main thread.
+  ///
+  /// Parameters:
+  /// - [docs]: An iterable of documents to index. Can be either [String] objects
+  ///   (which will be converted to [BM25Document] automatically) or [BM25Document]
+  ///   objects with pre-computed metadata.
+  /// - [indexFields]: List of metadata field names to index for filtering.
+  ///   Defaults to `['filePath']`. Only fields listed here can be used in
+  ///   search filters.
+  /// - [stopWords]: Optional set of words to ignore during indexing and search.
+  ///   Stop words are common words that typically don't contribute to search
+  ///   relevance (e.g., 'the', 'is', 'at').
+  ///
+  /// Returns a [Future] that completes with the built [BM25] instance.
+  ///
+  /// Throws:
+  /// - [ArgumentError] if the corpus is empty or contains invalid documents.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Build from strings
+  /// final bm25 = await BM25.build([
+  ///   'Document one text',
+  ///   'Document two text'
+  /// ]);
+  ///
+  /// // Build from BM25Document objects with metadata
+  /// final documents = [
+  ///   BM25Document(
+  ///     id: 0,
+  ///     text: 'Document text',
+  ///     terms: ['document', 'text'],
+  ///     meta: {'author': 'John', 'year': 2023}
+  ///   )
+  /// ];
+  /// final bm25 = await BM25.build(
+  ///   documents,
+  ///   indexFields: ['author', 'year']
+  /// );
+  /// ```
   static Future<BM25> build(
     Iterable<dynamic> docs, {
     List<String> indexFields = const ['filePath'],
@@ -98,10 +173,44 @@ class BM25 {
   /*──────────────  SEARCH  ──────────────*/
   /// Searches the corpus for documents matching the query.
   ///
-  /// [filter] - Optional metadata filters. Keys must be indexed fields.
-  /// Values must be primitives (String, num, bool) or List of primitives.
-  /// Custom objects are not supported due to isolate message passing constraints.
-  /// Example: {'filePath': 'doc.pdf', 'tags': ['important', 'review']}
+  /// This method performs a BM25-scored search across all indexed documents.
+  /// The search runs in a separate isolate for better performance and to avoid
+  /// blocking the main thread.
+  ///
+  /// Parameters:
+  /// - [query]: The search query string. Will be tokenized using the same rules
+  ///   as document indexing.
+  /// - [limit]: Maximum number of results to return. Defaults to 10.
+  /// - [filter]: Optional metadata filters. Keys must be indexed fields
+  ///   (specified during [build]). Values must be primitives (String, num, bool)
+  ///   or List of primitives. Custom objects are not supported due to isolate
+  ///   message passing constraints.
+  /// - [stopWords]: Optional set of words to ignore in the query. If not provided,
+  ///   uses the stop words specified during index building.
+  ///
+  /// Returns a [Future] that completes with a list of [SearchResult] objects,
+  /// sorted by relevance score (highest first).
+  ///
+  /// Throws:
+  /// - [RangeError] if [limit] is less than 1.
+  /// - [ArgumentError] if [filter] contains non-indexed fields.
+  /// - [StateError] if the instance has been disposed.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Simple search
+  /// final results = await bm25.search('brown fox');
+  ///
+  /// // Search with filters
+  /// final results = await bm25.search(
+  ///   'search query',
+  ///   limit: 20,
+  ///   filter: {
+  ///     'category': 'tech',
+  ///     'tags': ['mobile', 'web']  // matches docs with either tag
+  ///   }
+  /// );
+  /// ```
   Future<List<SearchResult>> search(
     String query, {
     int limit = 10,
@@ -220,6 +329,30 @@ class BM25 {
     }
   }
 
+  /// Disposes of the BM25 instance and releases all resources.
+  ///
+  /// This method:
+  /// - Prevents new searches from starting
+  /// - Waits for all active searches to complete
+  /// - Shuts down the worker isolate gracefully
+  /// - Releases all memory resources
+  ///
+  /// After calling [dispose], the instance cannot be used for searching.
+  /// Any attempt to call [search] will throw a [StateError].
+  ///
+  /// It's important to call this method when you're done using the BM25
+  /// instance to prevent memory leaks and ensure proper cleanup.
+  ///
+  /// Example:
+  /// ```dart
+  /// final bm25 = await BM25.build(documents);
+  /// try {
+  ///   final results = await bm25.search('query');
+  ///   // Process results...
+  /// } finally {
+  ///   await bm25.dispose();
+  /// }
+  /// ```
   Future<void> dispose() async {
     // If already disposed, return immediately
     if (_isDisposed) return;
@@ -521,7 +654,23 @@ class BM25 {
   }
 
   /*──────────────  PUBLIC GETTERS  ──────────────*/
-  /// Access to the document collection for extensions
+  /// Provides read-only access to the indexed documents.
+  ///
+  /// This getter returns an unmodifiable view of the document collection,
+  /// useful for extensions or for retrieving document metadata after searching.
+  ///
+  /// The documents are in the same order as they were indexed, with stable
+  /// IDs assigned sequentially starting from 0.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Get total document count
+  /// print('Indexed ${bm25.documents.length} documents');
+  ///
+  /// // Access a specific document
+  /// final doc = bm25.documents[0];
+  /// print('First doc: ${doc.text}');
+  /// ```
   List<BM25Document> get documents => List.unmodifiable(_docs);
 
   /*──────────────  HELPERS  ──────────────*/
