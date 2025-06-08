@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.2.3
+
+### New Features
+- **Relevance Feedback**: Implemented `searchWithFeedback` extension method using the Rocchio algorithm
+  - Enhances search results by incorporating terms from documents marked as relevant
+  - Supports customizable alpha (original query weight) and beta (relevant document weight) parameters
+  - Uses logarithmic scaling for term repetition to better represent term importance
+  - Preserves original query terms to maintain user intent
+
+### Improvements
+- Added public `documents` getter to BM25 class for extension access
+- Moved filter validation to beginning of search method for early error detection
+- Enhanced error handling with NaN/Infinity checks in relevance feedback calculations
+- Optimized relevant document lookup with O(1) Set operations and early exit
+- Document length normalization prevents bias towards longer documents
+
+### Bug Fixes
+- Fixed incomplete `searchWithFeedback` implementation that was just redirecting to regular search
+- Fixed ID type mismatch - changed `relevantDocIds` from `List<String>` to `List<int>`
+- Fixed alpha parameter not being used in Rocchio algorithm
+- Fixed beta parameter only affecting term count instead of term weights
+- Fixed edge case where original query terms could be dropped when alpha < 0.1
+
 ## 2.2.2
 
 ### Bug Fixes
