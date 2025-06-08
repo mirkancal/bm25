@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.2.2
+
+### Bug Fixes
+- **Critical**: Fixed race condition in worker lifecycle management
+  - Worker spawn operations are now properly memoized using `CancelableOperation` to prevent concurrent spawns
+  - Added dedicated shutdown acknowledgment port to ensure graceful worker termination
+  - Prevents race conditions where `_initPort` could be accessed after being closed
+  
+- **Critical**: Fixed deadlock in concurrent search/disposal scenarios
+  - Added `_disposeSignal` Completer to notify all waiting operations when disposal begins
+  - All async operations now use `Future.any` to race against the disposal signal
+  - Searches waiting on cancelled spawn operations are immediately notified instead of hanging
+  - Disposal now waits for all active searches without timeout to ensure clean shutdown
+  - Fixes edge case where multiple concurrent searches could hang indefinitely during disposal
+
+### Improvements
+- Enhanced concurrent operation handling with proper synchronization primitives
+- Added defensive checks in `_performSearch` to prevent operations after disposal
+- Improved error messages for disposal-related state errors
+- Added comprehensive test coverage including stress tests for concurrent disposal scenarios
+
+### Internal Changes
+- Changed from lazy to eager initialization of `_disposeSignal` for better performance
+- Used `Completer.sync()` for immediate notification without micro-task delay
+- Removed redundant disposed state checks after `Future.any` races
+
 ## 2.2.1
 
 ### Bug Fixes

@@ -46,6 +46,10 @@ class BM25 {
   // Track active searches for graceful disposal
   final List<Future<List<SearchResult>>> _activeSearches = [];
 
+  // Completes exactly once when dispose() starts. All waits can listen to it.
+  // This is only initialized in the main instance, not in worker instances.
+  late final Completer<void> _disposeSignal = Completer<void>.sync();
+
   BM25._(
     this._docs,
     this._dict,
@@ -93,7 +97,7 @@ class BM25 {
 
   /*──────────────  SEARCH  ──────────────*/
   /// Searches the corpus for documents matching the query.
-  /// 
+  ///
   /// [filter] - Optional metadata filters. Keys must be indexed fields.
   /// Values must be primitives (String, num, bool) or List of primitives.
   /// Custom objects are not supported due to isolate message passing constraints.
@@ -115,6 +119,9 @@ class BM25 {
       throw StateError('Cannot search: BM25 instance is being disposed');
     }
 
+    // A future that completes when we begin disposing.
+    final cancelToken = _disposeSignal.future;
+
     // Check if isolate was killed
     if (_iso == null && _worker != null) {
       // Isolate was killed, reset worker
@@ -126,25 +133,33 @@ class BM25 {
       if (_isDisposed) {
         throw StateError('Cannot search: BM25 instance has been disposed');
       }
-      
+
       // Prevent double-spawn race with cancellable operation
-      _spawnOp ??= CancelableOperation<SendPort>.fromFuture(
-        _spawnWorker(),
-      );
+      _spawnOp ??= CancelableOperation<SendPort>.fromFuture(_spawnWorker());
       try {
-        _worker = await _spawnOp!.value;
+        // Race the worker-spawn against disposal.
+        _worker = await Future.any<SendPort>([
+          _spawnOp!.value,
+          cancelToken.then(
+              (_) => throw StateError('Search cancelled: BM25 is disposing')),
+        ]);
       } catch (e) {
-        if (e is! StateError || !e.message.contains('canceled')) {
-          // Only rethrow if not a cancellation
-          rethrow;
+        // If we're disposing, convert any spawn error to a clear message
+        if (_isDisposing) {
+          throw StateError('Search cancelled: BM25 instance is being disposed');
         }
+        // Clear the operation on error so next search can retry
+        _spawnOp = null;
+        rethrow;
       } finally {
-        _spawnOp = null; // Always reset
+        // Always reset so next search can retry if needed
+        _spawnOp = null;
       }
     }
 
     // Create a future that we can track
-    final searchFuture = _performSearch(query, limit, filter, stopWords);
+    final searchFuture =
+        _performSearch(query, limit, filter, stopWords, cancelToken);
     _activeSearches.add(searchFuture);
 
     try {
@@ -159,11 +174,29 @@ class BM25 {
     int limit,
     Map<String, dynamic>? filter,
     Set<String>? stopWords,
+    Future<void> cancelToken,
   ) async {
+    // Defensive check in case called after disposal
+    if (_isDisposed || _isDisposing) {
+      throw StateError('Cannot perform search: instance disposing/disposed');
+    }
+
     final rp = ReceivePort();
     try {
       _worker!.send([rp.sendPort, query, limit, filter, stopWords]);
-      final response = await rp.first as List;
+
+      // Add timeout to prevent hanging if isolate is killed
+      final response = await Future.any<List>([
+        rp.first
+            .timeout(
+              const Duration(seconds: 30),
+              onTimeout: () => throw StateError(
+                  'Search timed out - worker may have been disposed'),
+            )
+            .then((value) => value as List),
+        cancelToken.then<List>(
+            (_) => throw StateError('Search cancelled: BM25 is disposing')),
+      ]);
 
       if (response[0] == 'error') {
         throw ArgumentError(response[1] as String);
@@ -182,20 +215,26 @@ class BM25 {
 
     // Prevent new searches during disposal
     _isDisposing = true;
+    // Notify every waiter exactly once.
+    if (!_disposeSignal.isCompleted) {
+      _disposeSignal.complete();
+    }
 
-    // Cancel any in-progress spawn immediately
-    await _spawnOp?.cancel();
-    _spawnOp = null;
+    // 1. Abort any in-flight spawn immediately
+    if (_spawnOp != null) {
+      // Cancel and wait for it to complete (either successfully or with error)
+      await _spawnOp!.cancel();
+      _spawnOp = null;
+    }
 
-    // Wait for all active searches to complete
+    // 2. Wait for **all** active searches. No timeout here - those
+    //    searches still need the worker; killing it early causes a hang.
     if (_activeSearches.isNotEmpty) {
       try {
-        await Future.wait(_activeSearches).timeout(
-          const Duration(seconds: 5),
-          onTimeout: () => <List<SearchResult>>[],
-        );
+        await Future.wait(_activeSearches, eagerError: false);
       } catch (_) {
-        // Ignore errors from cancelled searches
+        // Swallow individual State / Cancelled errors - we only care
+        // that every Future completes.
       }
     }
 
@@ -204,7 +243,7 @@ class BM25 {
       final shutdownPort = ReceivePort();
       // Send shutdown signal with acknowledgment port
       _worker!.send([null, shutdownPort.sendPort]);
-      
+
       try {
         // Wait for acknowledgment with timeout
         await shutdownPort.first.timeout(
@@ -323,12 +362,12 @@ class BM25 {
   /*──────────────  WORKER  ──────────────*/
   Future<SendPort> _spawnWorker() async {
     final initPort = ReceivePort();
-    
+
     try {
       // Create a copy without the isolate-related fields
       final workerData =
           BM25._(_docs, _dict, _post, _norm, _fieldIndex, _indexedFields);
-      
+
       // Spawn with hard timeout
       _iso = await Isolate.spawn(
         _workerMain,
@@ -338,7 +377,7 @@ class BM25 {
         const Duration(seconds: 10),
         onTimeout: () => throw TimeoutException('Worker spawn timeout'),
       );
-      
+
       // Check if we're being disposed
       if (_isDisposing) {
         _iso?.kill();
@@ -346,7 +385,7 @@ class BM25 {
         initPort.close();
         throw StateError('BM25 instance is being disposed');
       }
-      
+
       // Handshake with hard timeout
       final sendPort = await initPort.first.timeout(
         const Duration(seconds: 5),
@@ -356,7 +395,7 @@ class BM25 {
       // Close the port now that we have the SendPort
       // We don't need it anymore since we use a separate port for shutdown
       initPort.close();
-      
+
       return sendPort;
     } catch (e) {
       // Clean up on error
@@ -379,9 +418,9 @@ class BM25 {
         rx.close();
         break;
       }
-      
+
       final list = msg as List;
-      
+
       // Check if this is a shutdown request with acknowledgment port
       if (list[0] == null && list.length > 1) {
         // New shutdown protocol with acknowledgment
@@ -390,7 +429,7 @@ class BM25 {
         ackPort.send(null); // Send acknowledgment
         break;
       }
-      
+
       final reply = list[0] as SendPort;
       final q = list[1] as String;
       final lim = list[2] as int;
