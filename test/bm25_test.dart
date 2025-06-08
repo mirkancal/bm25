@@ -360,31 +360,91 @@ void main() {
   });
 
   group('BM25 Extensions', () {
-    test('@Skip("Not implemented") searchWithFeedback returns results',
-        () async {
-      // This test is skipped because searchWithFeedback currently just forwards to search()
-      // When relevance feedback is properly implemented, this test should:
-      // 1. Verify that relevantDocIds affect the scoring
-      // 2. Check that alpha and beta parameters are used correctly
-      // 3. Ensure the results differ from a regular search
-
+    test('searchWithFeedback returns results', () async {
       final docs = [
         'relevant document about cats',
         'another document about dogs',
         'more about cats and kittens',
+        'kittens are young cats that play',
+        'dogs and puppies are different from cats',
       ];
 
       final bm25 = await BM25.build(docs);
-      final results = await bm25.searchWithFeedback(
+
+      // First do a regular search
+      final regularResults = await bm25.search('cats');
+      expect(regularResults, isNotEmpty);
+
+      // Now search with feedback, marking document 0 and 2 as relevant
+      final feedbackResults = await bm25.searchWithFeedback(
         'cats',
-        relevantDocIds: ['0'],
+        relevantDocIds: [0, 2],
         alpha: 1.0,
         beta: 0.75,
         limit: 5,
       );
 
+      expect(feedbackResults, isNotEmpty);
+
+      // The feedback search should include documents with "kittens" higher
+      // because it appears in the relevant documents
+      final hasKittens =
+          feedbackResults.any((r) => r.doc.text.contains('kittens'));
+      expect(hasKittens, isTrue);
+    });
+
+    test(
+        'searchWithFeedback with empty relevantDocIds behaves like regular search',
+        () async {
+      final docs = [
+        'machine learning algorithms',
+        'deep learning networks',
+        'statistical learning theory',
+      ];
+
+      final bm25 = await BM25.build(docs);
+
+      final regularResults = await bm25.search('learning', limit: 3);
+      final feedbackResults = await bm25.searchWithFeedback(
+        'learning',
+        relevantDocIds: [],
+        limit: 3,
+      );
+
+      expect(regularResults.length, equals(feedbackResults.length));
+      // Results should be the same when no relevant docs are provided
+      for (int i = 0; i < regularResults.length; i++) {
+        expect(regularResults[i].doc.id, equals(feedbackResults[i].doc.id));
+      }
+    });
+
+    test('searchWithFeedback expands query with relevant terms', () async {
+      final docs = [
+        'python programming language tutorial',
+        'java programming language guide',
+        'python data science libraries numpy pandas',
+        'java enterprise applications spring',
+        'python machine learning tensorflow keras',
+      ];
+
+      final bm25 = await BM25.build(docs);
+
+      // Search for "python" and mark doc 2 and 4 as relevant
+      // These contain "data", "science", "machine", "learning" terms
+      final results = await bm25.searchWithFeedback(
+        'python',
+        relevantDocIds: [2, 4],
+        beta: 0.8,
+        limit: 5,
+      );
+
       expect(results, isNotEmpty);
-    }, skip: 'searchWithFeedback not yet implemented');
+
+      // Documents with data science and machine learning terms should rank higher
+      final topResults = results.take(3).map((r) => r.doc.id).toSet();
+      expect(topResults.contains(2), isTrue); // Has data science terms
+      expect(topResults.contains(4), isTrue); // Has machine learning terms
+    });
   });
 
   group('BM25 Tokenization', () {

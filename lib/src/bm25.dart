@@ -119,6 +119,17 @@ class BM25 {
       throw StateError('Cannot search: BM25 instance is being disposed');
     }
 
+    // Validate filter fields early (before any heavy work or isolate spawning)
+    if (filter != null && filter.isNotEmpty) {
+      final invalidFields =
+          filter.keys.where((k) => !_indexedFields.contains(k));
+      if (invalidFields.isNotEmpty) {
+        throw ArgumentError(
+            'Filter contains non-indexed fields: ${invalidFields.join(", ")}. '
+            'Available indexed fields: ${_indexedFields.join(", ")}');
+      }
+    }
+
     // A future that completes when we begin disposing.
     final cancelToken = _disposeSignal.future;
 
@@ -455,18 +466,9 @@ class BM25 {
     final toks = _tokenise(query, stop);
     if (toks.isEmpty) return const [];
 
-    // -------- Build allowed set if filter present
+    // -------- Build allowed set if filter present (validation already done)
     HashSet<int>? allowed;
     if (filter != null && filter.isNotEmpty) {
-      // Validate filter fields
-      final invalidFields =
-          filter.keys.where((k) => !_indexedFields.contains(k));
-      if (invalidFields.isNotEmpty) {
-        throw ArgumentError(
-            'Filter contains non-indexed fields: ${invalidFields.join(", ")}. '
-            'Available indexed fields: ${_indexedFields.join(", ")}');
-      }
-
       // Process all filter entries and compute intersection
       for (final entry in filter.entries) {
         final field = entry.key;
@@ -517,6 +519,10 @@ class BM25 {
     if (touched.isEmpty) return const [];
     return _topK(scores, touched, k);
   }
+
+  /*──────────────  PUBLIC GETTERS  ──────────────*/
+  /// Access to the document collection for extensions
+  List<BM25Document> get documents => List.unmodifiable(_docs);
 
   /*──────────────  HELPERS  ──────────────*/
   // Unicode-aware word pattern
