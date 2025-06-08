@@ -27,3 +27,20 @@ void main() async {
     }
   }
 }
+
+/* Example output:
+Building BM25 index...
+
+Searching for: "quick fox"
+  Score: 1.6473, Doc: "The quick brown fox jumps over the lazy dog"
+  Score: 0.9138, Doc: "A fast brown fox leaps above a sleeping dog"
+  Score: 0.8664, Doc: "Quick foxes are known for their jumping abilities"
+
+Searching for: "lazy dog"
+  Score: 1.1252, Doc: "The lazy dog sleeps under the tree"
+  Score: 1.0142, Doc: "The quick brown fox jumps over the lazy dog"
+  Score: 0.5626, Doc: "A fast brown fox leaps above a sleeping dog"
+
+Searching for: "jumping"
+  Score: 1.3719, Doc: "Quick foxes are known for their jumping abilities"
+*/
